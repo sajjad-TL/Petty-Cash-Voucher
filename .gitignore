@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.db
+petty_cash.db
+pdf/
+backup/
+backups/
+dist/
+build/
+*.egg-info/
+.DS_Store
+Thumbs.db
