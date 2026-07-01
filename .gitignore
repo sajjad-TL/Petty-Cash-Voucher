@@ -8,6 +8,8 @@ petty_cash.db
 pdf/
 backup/
 backups/
+data/
+exports/
 dist/
 build/
 *.egg-info/

@@ -14,7 +14,6 @@ class PettyCashUI:
         self.voucher = voucher
 
         self.rows = []
-        self._draft_voucher_seq = None
 
         self.create_variables()
 
@@ -303,6 +302,8 @@ class PettyCashUI:
                 "Payment for Vegetables",
 
                 "Payment for Flour",
+
+                "Payment for Yogurt",
 
                 "Payment for Cream"
 
@@ -610,20 +611,13 @@ class PettyCashUI:
     # NEW VOUCHER
     # ==========================================================
 
-    def _assign_next_voucher_id(self):
-        month_code = datetime.today().strftime("%Y%m")
-
-        if self._draft_voucher_seq is None:
-            next_id = self.voucher.generate_voucher_id()
-            self._draft_voucher_seq = int(next_id.split("-")[-1])
-        else:
-            self._draft_voucher_seq += 1
-
-        self.voucher_id.set(f"PCV-{month_code}-{self._draft_voucher_seq:04d}")
-
     def new_voucher(self):
 
-        self._assign_next_voucher_id()
+        self.voucher_id.set(
+
+            self.voucher.generate_voucher_id()
+
+        )
 
         today = datetime.today().strftime("%d-%b-%Y")
 
@@ -647,7 +641,7 @@ class PettyCashUI:
 
             amount.delete(0, tk.END)
 
-        self.status.set(f"New voucher ready: {self.voucher_id.get()}")
+        self.status.set("New voucher created.")
 
 
     # ==========================================================
@@ -665,6 +659,8 @@ class PettyCashUI:
             "issuer_date": self.issuer_date.get(),
             "approver_name": self.approver_name.get(),
             "approver_date": self.approver_date.get(),
+            "approved_by": self.approver_name.get(),
+            "paid_to": self.issuer_name.get(),
             "total": float(self.total.get().replace(",", "")) if self.total.get() else 0.0,
             "expenses": [],
         }
@@ -685,45 +681,11 @@ class PettyCashUI:
 
         return voucher
 
-    def _voucher_exists(self, voucher_no):
-        return self.voucher.get_voucher(voucher_no) is not None
-
-    def _save_voucher_to_db(self, voucher):
-        if self._voucher_exists(voucher["voucher_no"]):
-            return False
-
-        items = [
-            {
-                "purpose": row["purpose"],
-                "expense_head": row["head"],
-                "amount": row["amount"],
-            }
-            for row in voucher["expenses"]
-        ]
-
-        self.voucher.save_voucher(
-            voucher["voucher_no"],
-            voucher["date"],
-            voucher["total"],
-            voucher["prepared_by"],
-            voucher["approver_name"],
-            voucher["issuer_name"],
-            voucher["proposed_date"],
-            voucher["prepared_date"],
-            voucher["issuer_date"],
-            voucher["approver_date"],
-            items,
-        )
-        return True
-
-    def generate_pdf_file(self, voucher=None, allow_existing=False):
+    def generate_pdf_file(self, voucher=None):
         if voucher is None:
             voucher = self.build_voucher_data()
 
-        month_code = datetime.today().strftime("%Y%m")
-        voucher_no = voucher["voucher_no"] or "voucher"
-        individual_file = f"pdf/{voucher_no}.pdf"
-        batch_file = f"pdf/Vouchers_{month_code}.pdf"
+        filename = f"pdf/{voucher['voucher_no'] or 'voucher'}.pdf"
         os.makedirs("pdf", exist_ok=True)
 
         try:
@@ -736,78 +698,39 @@ class PettyCashUI:
             return None
 
         try:
-            saved = self._save_voucher_to_db(voucher)
-            if not saved and not allow_existing:
-                messagebox.showerror(
-                    "Duplicate Voucher",
-                    f"Voucher {voucher_no} is already saved.\nClick New Voucher for a new number.",
-                )
-                return None
-
-            if saved:
-                self._draft_voucher_seq = None
-
-            all_vouchers = self.voucher.get_month_vouchers_for_pdf()
-            if not all_vouchers:
-                messagebox.showerror("PDF Error", "No voucher data available to generate PDF.")
-                return None
-
-            placement_index = next(
-                (i for i, v in enumerate(all_vouchers) if v["voucher_no"] == voucher_no),
-                len(all_vouchers) - 1,
-            )
-            slot = placement_index % 2
-
-            generator = PDFGenerator()
-            generator.generate_a4_batch(all_vouchers, batch_file)
-            generator.generate(voucher, individual_file, slot=slot)
-
-            return {
-                "individual": individual_file,
-                "batch": batch_file,
-                "slot": slot,
-                "placement": placement_index + 1,
-            }
+            PDFGenerator().generate(voucher, filename)
+            return filename
         except Exception as e:
             messagebox.showerror("PDF Error", str(e))
             return None
 
     def save_pdf(self):
-        result = self.generate_pdf_file()
-        if not result:
+        filename = self.generate_pdf_file()
+        if not filename:
             return None
 
-        position = "top" if result["slot"] == 0 else "bottom"
-        messagebox.showinfo(
-            "PDF Saved",
-            f"Voucher saved.\n\n"
-            f"Individual: {result['individual']}\n"
-            f"Batch file: {result['batch']}\n"
-            f"Position on A4: {position} (#{result['placement']} this month)",
-        )
-        self.status.set(
-            f"Saved {result['individual']} ({position} of A4 page)"
-        )
+        messagebox.showinfo("PDF Saved", f"PDF saved to {filename}")
+        self.status.set(f"PDF saved: {filename}")
 
         try:
-            os.startfile(result["individual"])
+            os.startfile(filename)
         except Exception:
             pass
 
-        return result
+        return filename
 
     def print_voucher(self):
-        result = self.generate_pdf_file(allow_existing=True)
-        if not result:
+        filename = self.generate_pdf_file()
+        if not filename:
             return
 
         try:
             if platform.system() == "Windows":
-                os.startfile(result["individual"], "print")
+                os.startfile(filename, "print")
             elif platform.system() == "Darwin":
-                os.system(f"lp '{result['individual']}'")
+                os.system(f"lp '{filename}'")
             else:
-                os.system(f"lp '{result['individual']}'")
+                os.system(f"lp '{filename}'")
             messagebox.showinfo("Success", "Voucher sent to printer")
             self.status.set("Voucher sent to printer")
         except Exception as e:
