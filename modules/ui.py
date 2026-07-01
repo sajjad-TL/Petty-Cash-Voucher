@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 import os
 import platform
+import webbrowser
 from .voucher_manager import VoucherManager
 
 class PettyCashUI:
@@ -713,7 +714,9 @@ class PettyCashUI:
         self.status.set(f"PDF saved: {filename}")
 
         try:
-            os.startfile(filename)
+            # Open PDF in browser
+            file_path = os.path.abspath(filename)
+            webbrowser.open('file://' + file_path)
         except Exception:
             pass
 
