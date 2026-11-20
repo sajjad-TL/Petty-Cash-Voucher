@@ -1,11 +1,10 @@
 import sqlite3
-import os
 from datetime import datetime
 
 
 class DatabaseManager:
-    def __init__(self):
-        self.db_name = "petty_cash.db"
+    def __init__(self, db_name="petty_cash.db"):
+        self.db_name = db_name
         self.conn = sqlite3.connect(self.db_name)
         self.conn.row_factory = sqlite3.Row
         self.cursor = self.conn.cursor()
@@ -57,6 +56,22 @@ class DatabaseManager:
         )
         """)
 
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """)
+
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS month_closures(
+            month TEXT PRIMARY KEY,
+            closed_at TEXT NOT NULL,
+            voucher_count INTEGER NOT NULL,
+            voucher_total REAL NOT NULL
+        )
+        """)
+
         self.conn.commit()
 
     def execute(self, query, params=()):
@@ -76,6 +91,59 @@ class DatabaseManager:
         self.cursor.execute(query, params)
         self.conn.commit()
         return self.cursor.lastrowid
+
+    def get_setting(self, key, default=None):
+        row = self.fetchone("SELECT value FROM settings WHERE key=?", (key,))
+        return default if row is None else row["value"]
+
+    def set_setting(self, key, value):
+        self.execute(
+            """
+            INSERT OR REPLACE INTO settings(key, value)
+            VALUES(?, ?)
+            """,
+            (key, str(value)),
+        )
+
+    def get_month_closures(self):
+        return self.fetchall("SELECT * FROM month_closures ORDER BY month DESC")
+
+    def is_month_closed(self, month):
+        return self.fetchone(
+            "SELECT 1 FROM month_closures WHERE month=?",
+            (month,),
+        ) is not None
+
+    def close_month(self, month):
+        """Record a month-end snapshot once; existing vouchers remain editable."""
+        self.cursor.execute(
+            """
+            SELECT COUNT(*) AS voucher_count, COALESCE(SUM(total), 0) AS voucher_total
+            FROM vouchers
+            WHERE voucher_month=?
+            """,
+            (month,),
+        )
+        totals = self.cursor.fetchone()
+        self.cursor.execute(
+            """
+            INSERT OR IGNORE INTO month_closures(
+                month, closed_at, voucher_count, voucher_total
+            )
+            VALUES(?, ?, ?, ?)
+            """,
+            (
+                month,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                totals["voucher_count"],
+                totals["voucher_total"],
+            ),
+        )
+        self.conn.commit()
+        return self.fetchone(
+            "SELECT * FROM month_closures WHERE month=?",
+            (month,),
+        )
 
     # --------------------------------------------------
     # Generate Monthly Voucher Number
@@ -117,73 +185,63 @@ class DatabaseManager:
             items
     ):
 
-        month = datetime.today().strftime("%Y-%m")
+        if not isinstance(voucher_date, str):
+            raise ValueError("Voucher date must be text.")
+        normalized_date = voucher_date.strip()
+        parsed_date = None
+        for date_format in (
+            "%Y-%m-%d",
+            "%d-%b-%Y",
+            "%d-%B-%Y",
+            "%d-%m-%Y",
+        ):
+            try:
+                parsed_date = datetime.strptime(normalized_date, date_format).date()
+                break
+            except ValueError:
+                continue
+        if parsed_date is None:
+            raise ValueError(
+                "Voucher date must use YYYY-MM-DD or DD-Mon-YYYY format."
+            )
+
+        month = parsed_date.strftime("%Y-%m")
 
         created = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        self.cursor.execute("""
-        INSERT INTO vouchers(
-            voucher_no,
-            voucher_month,
-            voucher_date,
-
-            prepared_by,
-            prepared_date,
-
-            proposed_date,
-
-            issuer_name,
-            issuer_date,
-
-            approver_name,
-            approver_date,
-
-            total,
-
-            created_at
-        )
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            voucher_no,
-            month,
-            voucher_date,
-
-            prepared_by,
-            prepared_date,
-
-            proposed_date,
-
-            issuer_name,
-            issuer_date,
-
-            approver_name,
-            approver_date,
-
-            total,
-
-            created
-        ))
-
-        for item in items:
-
+        try:
             self.cursor.execute("""
-            INSERT INTO voucher_items(
-                voucher_no,
-                purpose,
-                expense_head,
-                amount
+            INSERT INTO vouchers(
+                voucher_no, voucher_month, voucher_date,
+                prepared_by, prepared_date, proposed_date,
+                issuer_name, issuer_date, approver_name, approver_date,
+                total, created_at
             )
-            VALUES(?,?,?,?)
-            """,
-            (
-                voucher_no,
-                item["purpose"],
-                item["expense_head"],
-                item["amount"]
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                voucher_no, month, voucher_date,
+                prepared_by, prepared_date, proposed_date,
+                issuer_name, issuer_date, approver_name, approver_date,
+                total, created,
             ))
 
-        self.conn.commit()
+            for item in items:
+                self.cursor.execute("""
+                INSERT INTO voucher_items(
+                    voucher_no, purpose, expense_head, amount
+                )
+                VALUES(?,?,?,?)
+                """, (
+                    voucher_no,
+                    item["purpose"],
+                    item["expense_head"],
+                    item["amount"],
+                ))
+
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     # --------------------------------------------------
     # Get Voucher
@@ -250,18 +308,19 @@ class DatabaseManager:
     # Delete Voucher
     # --------------------------------------------------
     def delete_voucher(self, voucher_no):
-
-        self.cursor.execute("""
-        DELETE FROM vouchers
-        WHERE voucher_no=?
-        """, (voucher_no,))
-
-        self.cursor.execute("""
-        DELETE FROM voucher_items
-        WHERE voucher_no=?
-        """, (voucher_no,))
-
-        self.conn.commit()
+        try:
+            self.cursor.execute(
+                "DELETE FROM voucher_items WHERE voucher_no=?",
+                (voucher_no,),
+            )
+            self.cursor.execute(
+                "DELETE FROM vouchers WHERE voucher_no=?",
+                (voucher_no,),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     # --------------------------------------------------
     # Update Voucher

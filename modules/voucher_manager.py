@@ -1,11 +1,160 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from modules.database import DatabaseManager
 
 
 class VoucherManager:
+    DEFAULT_MONTHLY_BUDGET = 60000
+    DEFAULT_COOK_SALARY = 12000
 
     def __init__(self, database=None):
         self.db = database if database is not None else DatabaseManager()
+
+    @staticmethod
+    def parse_date(value):
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+
+        value = str(value).strip()
+        for date_format in (
+            "%Y-%m-%d",
+            "%d-%b-%Y",
+            "%d-%B-%Y",
+            "%d-%m-%Y",
+        ):
+            try:
+                return datetime.strptime(value, date_format).date()
+            except ValueError:
+                continue
+        raise ValueError("Enter dates as YYYY-MM-DD or DD-Mon-YYYY.")
+
+    def get_monthly_budget(self):
+        value = self.db.get_setting(
+            "monthly_budget",
+            self.DEFAULT_MONTHLY_BUDGET,
+        )
+        return float(value)
+
+    def get_cook_salary(self):
+        value = self.db.get_setting(
+            "cook_salary",
+            self.DEFAULT_COOK_SALARY,
+        )
+        return float(value)
+
+    def set_monthly_budget(self, amount):
+        self.db.set_setting("monthly_budget", amount)
+
+    def set_cook_salary(self, amount):
+        self.db.set_setting("cook_salary", amount)
+
+    def close_elapsed_months(self, today=None):
+        """Close prior months, including missed month ends after an app was closed."""
+        today = today or date.today()
+        current_month = today.strftime("%Y-%m")
+        previous_month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        voucher_months = self.db.fetchall(
+            """
+            SELECT DISTINCT voucher_month
+            FROM vouchers
+            WHERE voucher_month < ?
+            """,
+            (current_month,),
+        )
+        months_to_close = {row["voucher_month"] for row in voucher_months}
+        months_to_close.add(previous_month)
+        for month in sorted(months_to_close):
+            self.db.close_month(month)
+        return sorted(months_to_close)
+
+    def get_vouchers_for_period(self, start_date, end_date):
+        start = self.parse_date(start_date)
+        end = self.parse_date(end_date)
+        if start > end:
+            raise ValueError("Start date must be on or before end date.")
+
+        matching = []
+        for row in self.db.fetchall("SELECT * FROM vouchers ORDER BY id DESC"):
+            try:
+                voucher_date = self.parse_date(row["voucher_date"])
+            except ValueError:
+                continue
+            if start <= voucher_date <= end:
+                matching.append(row)
+        return matching
+
+    def get_expense_report(self, start_date, end_date):
+        start = self.parse_date(start_date)
+        end = self.parse_date(end_date)
+        if start > end:
+            raise ValueError("Start date must be on or before end date.")
+
+        report_rows = []
+        voucher_expenses = 0.0
+        for row in self.db.fetchall("""
+            SELECT
+                v.voucher_no,
+                v.voucher_date,
+                i.purpose,
+                i.expense_head,
+                i.amount
+            FROM vouchers AS v
+            JOIN voucher_items AS i ON i.voucher_no = v.voucher_no
+            ORDER BY v.id DESC, i.id ASC
+        """):
+            try:
+                voucher_date = self.parse_date(row["voucher_date"])
+            except ValueError:
+                continue
+            if start <= voucher_date <= end:
+                amount = float(row["amount"] or 0)
+                voucher_expenses += amount
+                report_rows.append({
+                    "date": voucher_date,
+                    "voucher_no": row["voucher_no"],
+                    "purpose": row["purpose"] or "",
+                    "expense_head": row["expense_head"] or "",
+                    "amount": amount,
+                })
+
+        month_count = (
+            (end.year - start.year) * 12 + end.month - start.month + 1
+        )
+        monthly_budget = self.get_monthly_budget()
+        cook_salary = self.get_cook_salary()
+        budget_total = monthly_budget * month_count
+        salary_total = cook_salary * month_count
+
+        month = date(start.year, start.month, 1)
+        last_month = date(end.year, end.month, 1)
+        while month <= last_month:
+            report_rows.append({
+                "date": max(start, month),
+                "voucher_no": "",
+                "purpose": "Cook salary (monthly)",
+                "expense_head": "Fixed salary",
+                "amount": cook_salary,
+            })
+            if month.month == 12:
+                month = date(month.year + 1, 1, 1)
+            else:
+                month = date(month.year, month.month + 1, 1)
+
+        report_rows.sort(key=lambda row: (row["date"], row["voucher_no"]))
+        return {
+            "start_date": start,
+            "end_date": end,
+            "months": month_count,
+            "monthly_budget": monthly_budget,
+            "budget_total": budget_total,
+            "cook_salary": cook_salary,
+            "salary_total": salary_total,
+            "voucher_expenses": voucher_expenses,
+            "total_expenses": voucher_expenses + salary_total,
+            "remaining_budget": budget_total - voucher_expenses - salary_total,
+            "rows": report_rows,
+        }
 
     # ---------------------------------------
     # Generate Monthly Voucher ID
@@ -197,32 +346,7 @@ class VoucherManager:
     # Delete Voucher
     # ---------------------------------------
     def delete_voucher(self, voucher_no):
-
-        self.db.execute(
-
-            """
-
-            DELETE FROM voucher_items
-
-            WHERE voucher_no=?
-
-            """,
-
-            (voucher_no,)
-        )
-
-        self.db.execute(
-
-            """
-
-            DELETE FROM vouchers
-
-            WHERE voucher_no=?
-
-            """,
-
-            (voucher_no,)
-        )
+        self.db.delete_voucher(voucher_no)
 
     # ---------------------------------------
     # Search Voucher
