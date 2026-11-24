@@ -5,6 +5,7 @@ import os
 # Import project modules
 from modules.database import DatabaseManager
 from modules.voucher_manager import VoucherManager
+from modules.bill_manager import InternalBillManager
 from modules.ui import PettyCashUI
 
 class PettyCashApplication:
@@ -35,6 +36,11 @@ class PettyCashApplication:
         self.voucher = VoucherManager(self.database)
 
         # -------------------------
+        # Internal Bill Manager
+        # -------------------------
+        self.bill_manager = InternalBillManager(self.database)
+
+        # -------------------------
         # Tkinter Window
         # -------------------------
         self.root = tk.Tk()
@@ -62,7 +68,9 @@ class PettyCashApplication:
 
             database=self.database,
 
-            voucher=self.voucher
+            voucher=self.voucher,
+
+            bill_manager=self.bill_manager
 
         )
 

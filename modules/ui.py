@@ -11,11 +11,12 @@ from .voucher_manager import VoucherManager
 
 class PettyCashUI:
 
-    def __init__(self, root, database, voucher):
+    def __init__(self, root, database, voucher, bill_manager):
 
         self.root = root
         self.database = database
         self.voucher = voucher
+        self.bill_manager = bill_manager
 
         self.rows = []
 
@@ -107,6 +108,8 @@ class PettyCashUI:
             ("Search", self.search_voucher),
 
             ("History", self.show_history),
+
+            ("Bill Generator", self.open_bill_generator),
 
             ("Settings", self.open_settings),
 
@@ -787,6 +790,10 @@ class PettyCashUI:
         except Exception as e:
             messagebox.showerror("Error", f"Could not print: {e}")
 
+    def open_bill_generator(self):
+        from .bill_ui import InternalBillWindow
+
+        InternalBillWindow(self.root, self.bill_manager)
 
     def search_voucher(self):
 

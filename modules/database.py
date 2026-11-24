@@ -72,6 +72,28 @@ class DatabaseManager:
         )
         """)
 
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS internal_bills(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bill_date TEXT NOT NULL,
+            bill_to TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            total REAL NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """)
+
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS internal_bill_items(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bill_id INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            unit_price REAL NOT NULL,
+            quantity REAL NOT NULL,
+            line_total REAL NOT NULL
+        )
+        """)
+
         self.conn.commit()
 
     def execute(self, query, params=()):
@@ -143,6 +165,86 @@ class DatabaseManager:
         return self.fetchone(
             "SELECT * FROM month_closures WHERE month=?",
             (month,),
+        )
+
+    def save_internal_bill(self, bill_date, bill_to, note, total, items):
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            self.cursor.execute("BEGIN")
+            self.cursor.execute(
+                """
+                INSERT INTO internal_bills(
+                    bill_date, bill_to, note, total, created_at
+                )
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (bill_date, bill_to, note, total, created_at),
+            )
+            bill_id = self.cursor.lastrowid
+
+            for item in items:
+                self.cursor.execute(
+                    """
+                    INSERT INTO internal_bill_items(
+                        bill_id, description, unit_price, quantity, line_total
+                    )
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        bill_id,
+                        item["description"],
+                        item["unit_price"],
+                        item["quantity"],
+                        item["line_total"],
+                    ),
+                )
+
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+        return bill_id
+
+    def get_internal_bill_page(self, page_number, bills_per_page=4):
+        first_id = (page_number - 1) * bills_per_page + 1
+        last_id = first_id + bills_per_page - 1
+        rows = self.fetchall(
+            """
+            SELECT *
+            FROM internal_bills
+            WHERE id BETWEEN ? AND ?
+            ORDER BY id
+            """,
+            (first_id, last_id),
+        )
+
+        bills = []
+        for row in rows:
+            bill = dict(row)
+            items = self.fetchall(
+                """
+                SELECT description, unit_price, quantity, line_total
+                FROM internal_bill_items
+                WHERE bill_id=?
+                ORDER BY id
+                """,
+                (bill["id"],),
+            )
+            bill["items"] = [dict(item) for item in items]
+            bills.append(bill)
+        return bills
+
+    def get_internal_bill_descriptions(self, limit=100):
+        return self.fetchall(
+            """
+            SELECT description
+            FROM internal_bill_items
+            WHERE TRIM(description) != ''
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
         )
 
     # --------------------------------------------------
